@@ -46,6 +46,7 @@ contract YUSDEngine is ReentrancyGuard {
     error YUSDEngine__CollateralTokenNotAllowed();
     error YUSDEngine__TransferFailed();
     error YUSDEngine__BreaksHealthFactor(uint256 userHealthFactor);
+    error YUSDEngine__MintFailed();
 
     //////////////////////////
     // State Variables      //
@@ -145,6 +146,10 @@ contract YUSDEngine is ReentrancyGuard {
     function mintYUSD(uint256 amountYusdToMint) external moreThanZero(amountYusdToMint) nonReentrant {
         s_YUSDMinted[msg.sender] += amountYusdToMint;
         _refertIfHealthFactorIsBroken(msg.sender);
+        bool minted = i_yusd.mint(msg.sender, amountYusdToMint);
+        if (!minted) {
+            revert YUSDEngine__MintFailed();
+        }
     }
 
     function burnYUSD() external {}
@@ -172,9 +177,6 @@ contract YUSDEngine is ReentrancyGuard {
         uint8 feedDecimals = priceFeed.decimals();
         uint8 tokenDecimals = ERC20(token).decimals();
         uint8 diffDecimals = tokenDecimals - feedDecimals;
-        // 1e8
-        // 1e18
-        //
         return (amount * (uint256(price) * diffDecimals)) / tokenDecimals;
     }
 
