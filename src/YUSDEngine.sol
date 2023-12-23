@@ -20,6 +20,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {YoniUSD} from "./YoniUSD.sol";
 import {AggregatorV3Interface} from
     "lib/chainlink-brownie-contracts/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "forge-std/console.sol";
 
 /*
 * @title YUSDEngine
@@ -47,6 +48,8 @@ contract YUSDEngine is ReentrancyGuard {
     error YUSDEngine__TransferFailed();
     error YUSDEngine__BreaksHealthFactor(uint256 userHealthFactor);
     error YUSDEngine__MintFailed();
+    error YUSDEngine__BurnFailed();
+    error YUSDEngine__BurnMoreThanMinted();
 
     //////////////////////////
     // State Variables      //
@@ -68,6 +71,7 @@ contract YUSDEngine is ReentrancyGuard {
     /////////////////
 
     event collateralDeposited(address indexed user, address indexed token, uint256 indexed amount);
+    event collateralRedeemed(address indexed user, address indexed token, uint256 indexed amount);
 
     /////////////////
     // Modifiers   //
@@ -108,42 +112,85 @@ contract YUSDEngine is ReentrancyGuard {
     // External Functions   //
     //////////////////////////
 
-    function depositCollateralAndMintYUSD() external {}
+    /*
+    * @notice Deposit Collateral and Mint YUSD
+    * @param tokenCollateralAddress The address of the token to deposit as collateral
+    * @param amountCollateral The amount of collateral to deposit
+    * @param amountYUSDToMint The amount of YUSD to mint
+    * @notice deposit collateral and mint YUSD in a single transaction
+    */
+    function depositCollateralAndMintYUSD(
+        address tokenCollateralAddress,
+        uint256 amountCollateral,
+        uint256 amountYUSDToMint
+    ) external {
+        depositCollateral(tokenCollateralAddress, amountCollateral);
+        mintYUSD(amountYUSDToMint);
+    }
 
     /* 
     * @notice Deposit Collateral
     * @dev Follows CEI
     * @param tokenCollateral The address of the token to deposit as collateral
     * @param amountCollateral The amount of collateral to deposit
-    * @return
     */
     function depositCollateral(address tokenCollateralAddress, uint256 amountCollateral)
-        external
+        public
         moreThanZero(amountCollateral)
         isAllowedCollateralToken(tokenCollateralAddress)
         nonReentrant
     {
         s_collateralDeposited[msg.sender][tokenCollateralAddress] += amountCollateral;
-        emit collateralDeposited(msg.sender, tokenCollateralAddress, amountCollateral);
 
         bool success = IERC20(tokenCollateralAddress).transferFrom(msg.sender, address(this), amountCollateral);
 
         if (!success) {
             revert YUSDEngine__TransferFailed();
         }
+        emit collateralDeposited(msg.sender, tokenCollateralAddress, amountCollateral);
     }
 
-    function redeemCollateralForYUSD() external {}
+    /*
+    * @notice Redeem Collateral and Burn YUSD
+    * @param tokenCollateralAddress The address of the token to redeem as collateral
+    * @param amountCollateral The amount of collateral to redeem
+    * @param amountYUSDToMint The amount of YUSD to burn
+    * @notice redeem collateral and burn YUSD in a single transaction
+    */
+    function redeemCollateralForYUSD(address tokenCollateralAddress, uint256 amountCollateral, uint256 amountYusdToBurn)
+        external
+    {
+        burnYUSD(amountYusdToBurn);
+        redeemCollateral(tokenCollateralAddress, amountCollateral);
+    }
 
-    function redeemCollateral() external {}
+    /* 
+    * @notice Redeem Collateral
+    * @dev Follows CEI
+    * @param tokenCollateral The address of the token to redeem as collateral
+    * @param amountCollateral The amount of collateral to redeem
+    */
+    function redeemCollateral(address tokenCollateralAddress, uint256 amountCollateral)
+        public
+        moreThanZero(amountCollateral)
+        nonReentrant
+    {
+        s_collateralDeposited[msg.sender][tokenCollateralAddress] -= amountCollateral;
+
+        bool success = IERC20(tokenCollateralAddress).transferFrom(address(this), msg.sender, amountCollateral);
+        if (!success) {
+            revert YUSDEngine__TransferFailed();
+        }
+        _refertIfHealthFactorIsBroken(msg.sender);
+        emit collateralRedeemed(msg.sender, tokenCollateralAddress, amountCollateral);
+    }
 
     /* 
     * @notice Mint YUSD. Must have more collateral valure than the minimum threshold
     * @dev Follows CEI
     * @param amountYusdToMint The amount of YUSD to mint
-    * @return
     */
-    function mintYUSD(uint256 amountYusdToMint) external moreThanZero(amountYusdToMint) nonReentrant {
+    function mintYUSD(uint256 amountYusdToMint) public moreThanZero(amountYusdToMint) nonReentrant {
         s_YUSDMinted[msg.sender] += amountYusdToMint;
         _refertIfHealthFactorIsBroken(msg.sender);
         bool minted = i_yusd.mint(msg.sender, amountYusdToMint);
@@ -152,7 +199,25 @@ contract YUSDEngine is ReentrancyGuard {
         }
     }
 
-    function burnYUSD() external {}
+    /* 
+    * @notice Burn YUSD. Must have more collateral valure than the minimum threshold
+    * @dev Follows CEI
+    * @param amountYusdToMint The amount of YUSD to mint
+    */
+    function burnYUSD(uint256 amountYusdToBurn) public moreThanZero(amountYusdToBurn) nonReentrant {
+        if (amountYusdToBurn > s_YUSDMinted[msg.sender]) {
+            revert YUSDEngine__BurnMoreThanMinted();
+        }
+        s_YUSDMinted[msg.sender] -= amountYusdToBurn;
+
+        bool success = i_yusd.transferFrom(msg.sender, address(this), amountYusdToBurn);
+        if (!success) {
+            revert YUSDEngine__TransferFailed();
+        }
+
+        i_yusd.burn(amountYusdToBurn);
+        _refertIfHealthFactorIsBroken(msg.sender); // probably wont ever hit
+    }
 
     function liquidate() external {}
 
@@ -177,7 +242,7 @@ contract YUSDEngine is ReentrancyGuard {
         uint8 feedDecimals = priceFeed.decimals();
         uint8 tokenDecimals = ERC20(token).decimals();
         uint8 diffDecimals = tokenDecimals - feedDecimals;
-        return (amount * (uint256(price) * diffDecimals)) / tokenDecimals;
+        return (amount * (uint256(price) * (10 ** diffDecimals))) / (10 ** tokenDecimals);
     }
 
     /////////////////////////////////////////
