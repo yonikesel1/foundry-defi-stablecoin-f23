@@ -55,6 +55,13 @@ contract YUSDEngineTest is Test {
         vm.stopPrank();
     }
 
+    function testGetTokenAmountFromUsd() public {
+        uint256 amount = 2000e18;
+        uint256 expectedTokenAmount = 1e18;
+        uint256 actualTokenAmount = yUSDengine.getTokenAmountFromUsd(weth, amount);
+        assertEq(actualTokenAmount, expectedTokenAmount);
+    }
+
     // function testDepositCollateral() public {
     //     uint256 amount = 15e18;
     //     uint256 actualUsd = yUSDengine.depositCollateral(weth, amount);
