@@ -13,6 +13,7 @@
 
 pragma solidity ^0.8.20;
 
+import {console} from "forge-std/console.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -52,6 +53,7 @@ contract YUSDEngine is ReentrancyGuard {
     error YUSDEngine__BurnMoreThanMinted();
     error YUSDEngine__HealthFactorOK();
     error YUSDEngine__HealthFactorNotImproved();
+    error YUSDEngine__CantRedeemMoreThanSupplied();
 
     //////////////////////////
     // State Variables      //
@@ -59,7 +61,8 @@ contract YUSDEngine is ReentrancyGuard {
 
     uint256 private constant LIQUIDATION_THRESHOLD = 50;
     uint256 private constant LIQUIDATION_THRESHOLD_PRECISION = 100;
-    uint256 private constant MIN_HEALTH_FACTOR = 1;
+    uint256 private constant MIN_HEALTH_FACTOR = 1e4;
+    uint256 private constant HEALTH_FACTOR_PRECISION = 1e4;
     uint256 private constant LIQUIDATION_BONUS = 10;
     uint256 private constant LIQUIDATION_BONUS_PRECISION = 100;
 
@@ -148,13 +151,11 @@ contract YUSDEngine is ReentrancyGuard {
         nonReentrant
     {
         s_collateralDeposited[msg.sender][tokenCollateralAddress] += amountCollateral;
-
+        emit CollateralDeposited(msg.sender, tokenCollateralAddress, amountCollateral);
         bool success = IERC20(tokenCollateralAddress).transferFrom(msg.sender, address(this), amountCollateral);
-
         if (!success) {
             revert YUSDEngine__TransferFailed();
         }
-        emit CollateralDeposited(msg.sender, tokenCollateralAddress, amountCollateral);
     }
 
     /*
@@ -241,8 +242,6 @@ contract YUSDEngine is ReentrancyGuard {
         emit Liquidation(msg.sender, user, collateral, totalCollateralToLiquidate);
     }
 
-    function getHealthFactor() external view {}
-
     /////////////////////////////////////////
     // Public & External View Functions    //
     /////////////////////////////////////////
@@ -263,6 +262,18 @@ contract YUSDEngine is ReentrancyGuard {
         uint8 tokenDecimals = ERC20(token).decimals();
         uint8 diffDecimals = tokenDecimals - feedDecimals;
         return (amount * (uint256(price) * (10 ** diffDecimals))) / (10 ** tokenDecimals);
+    }
+
+    function getAccountInformation(address user)
+        external
+        view
+        returns (uint256 totalYUSDMinted, uint256 totalCollateralValueUSD)
+    {
+        return _getAccountInformation(user);
+    }
+
+    function getHealthFactor(address user) external view returns (uint256) {
+        return _healthFactor(user);
     }
 
     /*
@@ -293,21 +304,23 @@ contract YUSDEngine is ReentrancyGuard {
     function _redeemCollateral(address from, address to, address tokenCollateralAddress, uint256 amountCollateral)
         private
     {
+        if (amountCollateral > s_collateralDeposited[from][tokenCollateralAddress]) {
+            revert YUSDEngine__CantRedeemMoreThanSupplied();
+        }
         s_collateralDeposited[from][tokenCollateralAddress] -= amountCollateral;
-
-        bool success = IERC20(tokenCollateralAddress).transferFrom(address(this), to, amountCollateral);
+        emit CollateralRedeemed(from, to, tokenCollateralAddress, amountCollateral);
+        bool success = IERC20(tokenCollateralAddress).transfer(to, amountCollateral);
         if (!success) {
             revert YUSDEngine__TransferFailed();
         }
-        emit CollateralRedeemed(from, to, tokenCollateralAddress, amountCollateral);
     }
 
     /* 
-    * @notice Redeems a user collateral
+    * @notice Burns a users YUSD
     * @dev Follows CEI
-    * @param user The user to redeem the collateral
-    * @param tokenCollateralAddress The address of the token to redeem as collateral
-    * @param amountCollateral The amount of collateral to redeem
+    * @param onBehalfOf The user to return the YUSD debt for
+    * @param dscFrom The address of the user to get the YUSD from
+    * @param amountYusdToMint The amount of YUSD to burn
     */
     function _burnYUSD(address onBehalfOf, address dscFrom, uint256 amountYusdToBurn) private {
         if (amountYusdToBurn > s_YUSDMinted[onBehalfOf]) {
@@ -346,11 +359,16 @@ contract YUSDEngine is ReentrancyGuard {
     */
     function _healthFactor(address user) private view returns (uint256) {
         (uint256 totalYUSDMinted, uint256 totalCollateralValueUSD) = _getAccountInformation(user);
-        return (totalCollateralValueUSD * (LIQUIDATION_THRESHOLD / LIQUIDATION_THRESHOLD_PRECISION)) / totalYUSDMinted;
+        if (totalYUSDMinted == 0) {
+            return type(uint256).max;
+        }
+        return (totalCollateralValueUSD * LIQUIDATION_THRESHOLD / LIQUIDATION_THRESHOLD_PRECISION)
+            * HEALTH_FACTOR_PRECISION / totalYUSDMinted;
     }
 
     function _refertIfHealthFactorIsBroken(address user) internal view {
         uint256 userHealthFactor = _healthFactor(user);
+        console.log("userHealthFactor: %s", userHealthFactor);
         if (userHealthFactor < MIN_HEALTH_FACTOR) {
             revert YUSDEngine__BreaksHealthFactor(userHealthFactor);
         }
