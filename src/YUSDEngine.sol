@@ -13,15 +13,13 @@
 
 pragma solidity ^0.8.20;
 
-import {console} from "forge-std/console.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {YoniUSD} from "./YoniUSD.sol";
-import {AggregatorV3Interface} from
-    "lib/chainlink-brownie-contracts/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
-import "forge-std/console.sol";
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import {OracleLib} from "./libraries/OracleLib.sol";
 
 /*
 * @title YUSDEngine
@@ -54,6 +52,12 @@ contract YUSDEngine is ReentrancyGuard {
     error YUSDEngine__HealthFactorOK();
     error YUSDEngine__HealthFactorNotImproved();
     error YUSDEngine__CantRedeemMoreThanSupplied();
+
+    ////////////
+    // Types  //
+    ////////////
+
+    using OracleLib for AggregatorV3Interface;
 
     ////////////////////
     // Constants      //
@@ -261,7 +265,7 @@ contract YUSDEngine is ReentrancyGuard {
 
     function getUSDValue(address token, uint256 amount) public view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
-        (, int256 price,,,) = priceFeed.latestRoundData();
+        (, int256 price,,,) = priceFeed.staleCheckLatestRoundData();
         uint8 feedDecimals = priceFeed.decimals();
         uint8 tokenDecimals = ERC20(token).decimals();
         uint8 diffDecimals = tokenDecimals - feedDecimals;
@@ -299,7 +303,7 @@ contract YUSDEngine is ReentrancyGuard {
     */
     function getTokenAmountFromUsd(address token, uint256 UsdAmountInWei) public view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
-        (, int256 price,,,) = priceFeed.latestRoundData();
+        (, int256 price,,,) = priceFeed.staleCheckLatestRoundData();
         uint8 feedDecimals = priceFeed.decimals();
         uint8 tokenDecimals = ERC20(token).decimals();
         uint8 diffDecimals = tokenDecimals - feedDecimals;
@@ -384,7 +388,6 @@ contract YUSDEngine is ReentrancyGuard {
 
     function _refertIfHealthFactorIsBroken(address user) internal view {
         uint256 userHealthFactor = _healthFactor(user);
-        console.log("userHealthFactor: %s", userHealthFactor);
         if (userHealthFactor < MIN_HEALTH_FACTOR) {
             revert YUSDEngine__BreaksHealthFactor(userHealthFactor);
         }
