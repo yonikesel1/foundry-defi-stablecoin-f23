@@ -55,9 +55,9 @@ contract YUSDEngine is ReentrancyGuard {
     error YUSDEngine__HealthFactorNotImproved();
     error YUSDEngine__CantRedeemMoreThanSupplied();
 
-    //////////////////////////
-    // State Variables      //
-    //////////////////////////
+    ////////////////////
+    // Constants      //
+    ////////////////////
 
     uint256 private constant LIQUIDATION_THRESHOLD = 50;
     uint256 private constant LIQUIDATION_THRESHOLD_PRECISION = 100;
@@ -65,6 +65,10 @@ contract YUSDEngine is ReentrancyGuard {
     uint256 private constant HEALTH_FACTOR_PRECISION = 1e4;
     uint256 private constant LIQUIDATION_BONUS = 10;
     uint256 private constant LIQUIDATION_BONUS_PRECISION = 100;
+
+    //////////////////////////
+    // State Variables      //
+    //////////////////////////
 
     mapping(address token => address priceFeed) private s_priceFeeds;
     mapping(address user => mapping(address token => uint256 amount)) private s_collateralDeposited;
@@ -274,6 +278,18 @@ contract YUSDEngine is ReentrancyGuard {
 
     function getHealthFactor(address user) external view returns (uint256) {
         return _healthFactor(user);
+    }
+
+    function getCollateralTokens() external view returns (address[] memory) {
+        return s_collateralTokens;
+    }
+
+    function getCollateralBalanceOfUser(address user, address token) external view returns (uint256) {
+        return s_collateralDeposited[user][token];
+    }
+
+    function getCollateralTokenPriceFeed(address token) external view returns (address) {
+        return s_priceFeeds[token];
     }
 
     /*
